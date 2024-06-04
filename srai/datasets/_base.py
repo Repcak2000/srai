@@ -69,32 +69,53 @@ class HuggingFaceDataset(abc.ABC):
 
         return processed_data
 
-    def train_dev_test_split_bucket_regression(
+    def train_test_split_bucket_regression(
         self,
         gdf: gpd.GeoDataFrame,
         target_column: Optional[str] = None,
+        resolution: int = 9,
         test_size: float = 0.2,
         bucket_number: int = 7,
-    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
-        """Method to generate train, dev and test split from GeoDataFrame, based on the target_column values - its statistic.
+        random_state: Optional[int] = None,
+    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
+        """Method to generate train and test split from GeoDataFrame, based on the target_column values - its statistic.
 
         Args:
             gdf (gpd.GeoDataFrame): GeoDataFrame on which train, dev, test split will be performed.
-            target_column (Optional[str], optional): Target column name. Defaults to "price".
+            target_column (Optional[str], optional): Target column name. If None, split generated on basis of number \
+                of points within a hex ov given resolution.
+            resolution (int, optional): h3 resolution to regionalize data. Defaults to 9.
             test_size (float, optional): Percentage of test set. Defaults to 0.2.
             bucket_number (int, optional): Bucket number used to stratify target data. Defaults to 7.
+            random_state (int, optional):  Controls the shuffling applied to the data before applying the split. \
+                Pass an int for reproducible output across multiple function. Defaults to None.
 
         Returns:
-            tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]: Train, Dev, Test splits in GeoDataFrames
+            tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]: Train, Test splits in GeoDataFrames
         """  # noqa: E501, W505
         if self.type != "point":
             raise ValueError("This split can be performed only on point data type!")
         if target_column is None:
-            target_column = self.target
+            # target_column = self.target
+            target_column = "count"
+
         gdf_ = gdf.copy()
         splits = np.linspace(
             0, 1, num=bucket_number + 1
         )  # generate splits to bucket classification
+        if target_column == "count":
+            regionalizer = H3Regionalizer(resolution=resolution)
+            regions = regionalizer.transform(gdf)
+            joined_gdf = gpd.sjoin(gdf, regions, how="left", predicate="within")  # noqa: E501
+            joined_gdf.rename(columns={"index_right": "h3_index"}, inplace=True)
+
+            averages_hex = joined_gdf.groupby("h3_index").size().reset_index(name=target_column)
+            gdf_ = regions.merge(
+                averages_hex, how="inner", left_on="region_id", right_on="h3_index"
+            )
+            gdf_.rename(columns={"h3_index": "region_id"}, inplace=True)
+            gdf_.index = gdf_["region_id"]
+
         quantiles = gdf_[target_column].quantile(splits)  # compute quantiles
         bins = [quantiles[i] for i in splits]
         gdf_["bucket"] = pd.cut(gdf_[target_column], bins=bins, include_lowest=True).apply(
@@ -103,27 +124,38 @@ class HuggingFaceDataset(abc.ABC):
 
         train_indices, test_indices = train_test_split(
             range(len(gdf_)),
-            test_size=test_size * 2,  # multiply for dev set also
+            test_size=test_size,  # * 2 multiply for dev set also
             stratify=gdf_.bucket,  # stratify by bucket value
+            random_state=random_state,
         )
 
-        dev_indices, test_indices = train_test_split(
-            range(len(test_indices)),
-            test_size=0.5,
-            stratify=gdf_.iloc[test_indices].bucket,
-        )
+        # dev_indices, test_indices = train_test_split(
+        #     range(len(test_indices)),
+        #     test_size=0.5,
+        #     stratify=gdf_.iloc[test_indices].bucket,
+        # )
+        train = gdf_.iloc[train_indices]
+        test = gdf_.iloc[test_indices]
+        if target_column == "count":
+            train_hex_indexes = train["region_id"].unique()
+            test_hex_indexes = test["region_id"].unique()
+            train = joined_gdf[joined_gdf["h3_index"].isin(train_hex_indexes)]
+            test = joined_gdf[joined_gdf["h3_index"].isin(test_hex_indexes)]
+            train = train.drop(columns=["h3_index"])
+            test = test.drop(columns=["h3_index"])
 
-        return gdf_.iloc[train_indices], gdf_.iloc[dev_indices], gdf_.iloc[test_indices]
+        return train, test  # , gdf_.iloc[dev_indices]
 
-    def train_dev_test_split_spatial_points(
+    def train_test_split_spatial_points(
         self,
         gdf: gpd.GeoDataFrame,
         test_size: float = 0.2,
         resolution: int = 8,  # TODO: dodać pole per dataset z h3_train_resolution
         resolution_subsampling: int = 1,
-    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
+        random_state: Optional[int] = None,
+    ) -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
         """
-        Method to generate train, dev and test split from GeoDataFrame, based on the spatial h3
+        Method to generate train and test split from GeoDataFrame, based on the spatial h3
         resolution.
 
         Args:
@@ -132,12 +164,14 @@ class HuggingFaceDataset(abc.ABC):
             resolution (int, optional): h3 resolution to regionalize data. Defaults to 8.
             resolution_subsampling (int, optional): h3 resolution difference to subsample \
                 data for stratification. Defaults to 1.
+            random_state (int, optional):  Controls the shuffling applied to the data before applying the split. \
+                Pass an int for reproducible output across multiple function. Defaults to None.
 
         Raises:
             ValueError: If type of data is not Points.
 
         Returns:
-            tuple[gpd.GeoDataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]: Train, Dev, Test splits in GeoDataFrames
+            tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]: Train, Test splits in GeoDataFrames
         """  # noqa: W505, E501, D205
         if self.type != "point":
             raise ValueError("This split can be performed only on Points data type!")
@@ -168,19 +202,20 @@ class HuggingFaceDataset(abc.ABC):
 
         train_indices, test_indices = train_test_split(
             range(len(joined_gdf)),
-            test_size=test_size * 2,  # multiply for dev set also
+            test_size=test_size,  # * 2,  # multiply for dev set also
             stratify=joined_gdf.h3_index,  # stratify by spatial h3
+            random_state=random_state,
         )
 
-        dev_indices, test_indices = train_test_split(
-            range(len(test_indices)),
-            test_size=0.5,
-            stratify=joined_gdf.iloc[
-                test_indices
-            ].h3_index,  # perform spatial stratify (by h3 index)
-        )
+        # dev_indices, test_indices = train_test_split(
+        #     range(len(test_indices)),
+        #     test_size=0.5,
+        #     stratify=joined_gdf.iloc[
+        #         test_indices
+        #     ].h3_index,  # perform spatial stratify (by h3 index)
+        # )
 
-        return gdf_.iloc[train_indices], gdf_.iloc[dev_indices], gdf_.iloc[test_indices]
+        return gdf_.iloc[train_indices], gdf_.iloc[test_indices]  # , gdf_.iloc[dev_indices],
 
     def train_dev_test_split_bucket_trajectory(
         self,
