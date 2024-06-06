@@ -10,7 +10,14 @@ from typing import Any, Callable, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    mean_absolute_error,
+    mean_squared_error,
+    precision_score,
+    recall_score,
+)
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -197,16 +204,37 @@ class Evaluator:
         self, predictions: torch.Tensor, labels: torch.Tensor
     ) -> dict[str, float]:
         """
-        Calucates trajectory prediction metrics.
+        Calculates trajectory prediction metrics.
 
         Args:
-            predictions (torch.Tensor): Predictions return by model.
+            predictions (torch.Tensor): Predictions returned by the model.
             labels (torch.Tensor): Target values.
 
-        Raises:
-            NotImplementedError: _description_
+        Returns:
+            dict[str, float]: A dictionary containing the accuracy, precision, recall, and F1-score.
         """
-        raise NotImplementedError
+        # Ensure the predictions are in the form of class indices
+        _, predictions = torch.max(predictions, 1)
+
+        # Ensure labels are also in the form of class indices
+        _, labels = torch.max(labels, 1)
+
+        # Convert tensors to numpy arrays
+        predictions = predictions.cpu().numpy()
+        labels = labels.cpu().numpy()
+
+        # Calculate metrics using sklearn
+        test_accuracy = accuracy_score(labels, predictions)
+        test_precision = precision_score(labels, predictions, average="weighted")
+        test_recall = recall_score(labels, predictions, average="weighted")
+        test_f1 = f1_score(labels, predictions, average="weighted")
+
+        return {
+            "Accuracy": test_accuracy,
+            "Precision": test_precision,
+            "Recall": test_recall,
+            "F1": test_f1,
+        }
 
     def compute_poi_prediction_metrics(
         self, predictions: torch.Tensor, labels: torch.Tensor
