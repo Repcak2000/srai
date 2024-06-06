@@ -213,17 +213,12 @@ class Evaluator:
         Returns:
             dict[str, float]: A dictionary containing the accuracy, precision, recall, and F1-score.
         """
-        # Ensure the predictions are in the form of class indices
         _, predictions = torch.max(predictions, 1)
-
-        # Ensure labels are also in the form of class indices
         _, labels = torch.max(labels, 1)
 
-        # Convert tensors to numpy arrays
         predictions = predictions.cpu().numpy()
         labels = labels.cpu().numpy()
 
-        # Calculate metrics using sklearn
         test_accuracy = accuracy_score(labels, predictions)
         test_precision = precision_score(labels, predictions, average="weighted")
         test_recall = recall_score(labels, predictions, average="weighted")
